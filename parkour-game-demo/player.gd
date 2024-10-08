@@ -7,23 +7,24 @@ extends CharacterBody3D
 @onready var crouching_collision_shape: CollisionShape3D = $crouching_collision_shape
 @onready var head_collision_cast: RayCast3D = $head_collision_cast
 @onready var ground_collision_cast: RayCast3D = $ground_collision_cast
+@onready var slanted_wall: CSGBox3D = $"../stage/Slanted Wall"
 
 # Physics
 
-var slide_velo = Vector3()
-
 var slope_angle = 0
 
-const terminal_Velo = 50
+const terminal_velo = 50
+
+var nudge = Vector3.ZERO
+
+var crouch_velo = Vector3.ZERO
 
 # Speed vars
 
 var previous_y_position: float
 
-
 var speed_current = 0
 
-const sprinting_speed = 15.0
 const crouching_speed = 10.0
 const walking_speed = 12.0
 
@@ -82,61 +83,82 @@ func slope_physics():
 
 func _physics_process(delta: float) -> void:
 	
-	# Handle movement state
+	var velocities = get_real_velocity()
+	# Get input direction
+	var input_dir := Input.get_vector("left", "right", "forward", "backward")
 	
-	# Crouching
+	var button_state := Input.get_vector("left", "right", "forward", "backward")
+
+	var target_dir = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
+	var acceleration_speed = 10.0  # Faster acceleration value that is adjustable
+	direction = direction.lerp(target_dir, acceleration_speed * delta)
+	
+	var floor_normal = get_floor_normal()
+	
+		# Walking
+				
+	# Crouching logic
 	if Input.is_action_pressed("crouch"):
+		
+		var collided_node = null
+	# Ground collision cast to check if the player is grounded
+
+		# Perform the cast
+		ground_collision_cast.force_raycast_update() # Ensure the ray is updated before checking for collisions
+		
+		if ground_collision_cast.is_colliding():
+			collided_node = ground_collision_cast.get_collider()
+			
+		
 		speed_current = crouching_speed
 		head.position.y = lerp(head.position.y, 1.8 + crouching_depth, delta*lerp_speed)
 		standing_collision_shape.disabled = true
 		crouching_collision_shape.disabled = false
-		# Get input direction for crouching
-		var input_dir := Input.get_vector("left", "right", "forward", "backward")
-		direction = (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 		
+
 		var slope_angle = slope_physics()
 		
-		var velocities = get_real_velocity()
-		
 		if slope_angle > deg_to_rad(10):
-			if !direction.length() > 0: # not pressing direction, only crouch
-				var x_slope_acceleration = (1 + slope_angle) * velocities[0]
-				var z_slope_acceleration = (1 + slope_angle) * velocities[2]
-				if velocities[1] < 0:
-					velocity.x += x_slope_acceleration * delta
-					velocity.z += z_slope_acceleration * delta
-				else:
-					velocity.x = velocity.x * 0.7 
-					velocity.z = velocity.z * 0.7
-			
-		elif direction.length() > 0 and slope_angle != 0:
-			velocity.x = direction.x * speed_current 
-			velocity.z = direction.z * speed_current
+			if collided_node != null:
+				print("Collided with:", collided_node) # not pressing direction, only crouch
+				var slope_accel = collided_node.transform.basis.x * (rad_to_deg(slope_angle))
+				var max_velocity = terminal_velo * collided_node.transform.basis.x
+				velocity += slope_accel * delta
+				velocity = crouch_velo.min(max_velocity)
+				#var x_slope_acceleration = (1 + slope_angle) * velocities[0]
+				#var z_slope_acceleration = (1 + slope_angle) * velocities[2]
+				#velocity.x += x_slope_acceleration * delta
+				#velocity.z += z_slope_acceleration * delta
 		else:
-			velocity.x = move_toward(velocity.x, 0, dec * delta * 1.5)
-			velocity.z = move_toward(velocity.z, 0, dec * delta * 1.5)
+			velocity.x = move_toward(velocity.x, 0, dec * delta * 2.5)
+			velocity.z = move_toward(velocity.z, 0, dec * delta * 2.5)
 		
 	# Prevent wall clipping
 	elif !head_collision_cast.is_colliding():
+		
+		# Standing
 		standing_collision_shape.disabled = false
 		crouching_collision_shape.disabled = true
 		head.position.y = lerp(head.position.y, 1.8, delta*lerp_speed)
-
-	# Standing
-	if Input.is_action_pressed("sprint"):
-		# Sprinting
-		speed_current = sprinting_speed
-	elif Input.is_action_pressed("backward") || Input.is_action_pressed("forward") || Input.is_action_pressed("right") || Input.is_action_pressed("left"):
-		# Walking
+		
+			
+	#print(slope_angle) THIS IS PRINTING ZEROOOOOO!!!!! # Update walking speed
+	if !Input.is_action_pressed("crouch"):
 		speed_current = walking_speed
-	# Movement when standing
-	if direction.length() > 0 and !Input.is_action_pressed("crouch"):
-		velocity.x = direction.x * speed_current
-		velocity.z = direction.z * speed_current
-	else:
-		# Exponentially decelerate when crouching and not pressing any input
-		velocity.x = move_toward(velocity.x, 0, dec * delta * 4)
-		velocity.z = move_toward(velocity.z, 0, dec * delta * 4)
+		if slope_angle > deg_to_rad(10):
+			var x_slope_acceleration = (1 + slope_angle) * velocities[0]
+			var z_slope_acceleration = (1 + slope_angle) * velocities[2]
+			
+			velocity.x = direction.x * (speed_current * x_slope_acceleration)
+			velocity.z = direction.z * (speed_current * z_slope_acceleration)
+		else:
+			velocity.x = direction.x * speed_current
+			velocity.z = direction.z * speed_current
+
+	elif !direction.length() > 0 and slope_angle < deg_to_rad(10):
+		## Exponentially decelerate when walk ends, but only if this isnt a slope anymore
+		velocity.x = move_toward(velocity.x, 0, dec * delta * 10)
+		velocity.z = move_toward(velocity.z, 0, dec * delta * 10)
 		
 	# Stop the super low decimals
 	velocity.x = snap_to_zero(velocity.x)
@@ -152,7 +174,5 @@ func _physics_process(delta: float) -> void:
 
 	# Get the input direction and handle the movement/deceleration.
 	# As good practice, you should replace UI actions with custom gameplay actions.
-	var input_dir := Input.get_vector("left", "right", "forward", "backward")
-	direction = lerp(direction,(transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized(),delta*lerp_speed)
 
 	move_and_slide()
